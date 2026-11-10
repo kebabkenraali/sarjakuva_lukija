@@ -26,6 +26,51 @@
   const stopBtn = $('stopBtn');
   const rateEl = $('rate');
   const bubbleOnlyEl = $('bubbleOnly');
+  const zoomEl = $('zoom');
+  const zoomWrap = $('zoomWrap');
+  const stageEl = $('stage');
+  let track = null;         // kameran videoraita (zoom-ohjaus)
+  let zoomCaps = null;      // kameran tukema zoom-alue
+
+  // Ohjaa kameran laitteistozoomia (ei sivun zoomausta, joten käyttöliittymän teksti ei suurene)
+  function setCameraZoom(value) {
+    if (!track || !zoomCaps) return;
+    const v = Math.min(zoomCaps.max, Math.max(zoomCaps.min, value));
+    zoomEl.value = v;
+    track.applyConstraints({ advanced: [{ zoom: v }] }).catch(err => console.warn('zoom', err));
+  }
+
+  function setupZoom() {
+    zoomCaps = null;
+    const caps = track && track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.zoom) {
+      zoomCaps = { min: caps.zoom.min, max: caps.zoom.max };
+      zoomEl.min = caps.zoom.min;
+      zoomEl.max = caps.zoom.max;
+      zoomEl.step = caps.zoom.step || 0.1;
+      zoomEl.value = (track.getSettings().zoom) || caps.zoom.min;
+      zoomWrap.hidden = false;
+    } else {
+      zoomWrap.hidden = true;
+    }
+  }
+
+  // Nipistys kuvan päällä ohjaa kameran zoomia (sivun teksti ei suurene)
+  let pinchStartDist = 0, pinchStartZoom = 1;
+  const touchDist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  stageEl.addEventListener('touchstart', e => {
+    if (e.touches.length === 2 && zoomCaps) {
+      pinchStartDist = touchDist(e.touches);
+      pinchStartZoom = parseFloat(zoomEl.value);
+    }
+  }, { passive: true });
+  stageEl.addEventListener('touchmove', e => {
+    if (e.touches.length === 2 && zoomCaps && pinchStartDist > 0) {
+      e.preventDefault();
+      setCameraZoom(pinchStartZoom * touchDist(e.touches) / pinchStartDist);
+    }
+  }, { passive: false });
+  zoomEl.addEventListener('input', () => setCameraZoom(parseFloat(zoomEl.value)));
   const statusEl = $('status');
   const lastEl = $('last');
 
@@ -369,6 +414,8 @@
       });
       video.srcObject = stream;
       await video.play();
+      track = stream.getVideoTracks()[0];
+      setupZoom();
 
       setStatus('Ladataan tekstintunnistusta (ensimmäinen kerta voi kestää)…');
       worker = await Tesseract.createWorker(CONFIG.lang, 1, {
@@ -395,6 +442,9 @@
     if (stream) stream.getTracks().forEach(t => t.stop());
     stream = null;
     video.srcObject = null;
+    track = null;
+    zoomCaps = null;
+    zoomWrap.hidden = true;
     if (worker) {
       try { await worker.terminate(); } catch (_) { /* ignoroi */ }
       worker = null;
