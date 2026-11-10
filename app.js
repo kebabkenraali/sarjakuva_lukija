@@ -20,6 +20,8 @@
 
   const $ = id => document.getElementById(id);
   const video = $('video');
+  const view = $('view');              // näkyvä (zoomattu) kuva
+  const vctx = view.getContext('2d');
   const overlay = $('overlay');
   const octx = overlay.getContext('2d');
   const startBtn = $('startBtn');
@@ -27,50 +29,44 @@
   const rateEl = $('rate');
   const bubbleOnlyEl = $('bubbleOnly');
   const zoomEl = $('zoom');
-  const zoomWrap = $('zoomWrap');
   const stageEl = $('stage');
-  let track = null;         // kameran videoraita (zoom-ohjaus)
-  let zoomCaps = null;      // kameran tukema zoom-alue
 
-  // Ohjaa kameran laitteistozoomia (ei sivun zoomausta, joten käyttöliittymän teksti ei suurene)
-  function setCameraZoom(value) {
-    if (!track || !zoomCaps) return;
-    const v = Math.min(zoomCaps.max, Math.max(zoomCaps.min, value));
-    zoomEl.value = v;
-    track.applyConstraints({ advanced: [{ zoom: v }] }).catch(err => console.warn('zoom', err));
+  // Digitaalinen zoom: näytetään ja luetaan kuvan keskiosa. Sivun tekstit eivät suurene.
+  let zoom = 1;
+  function setZoom(z) {
+    zoom = Math.min(4, Math.max(1, z));
+    zoomEl.value = zoom;
   }
+  zoomEl.addEventListener('input', () => setZoom(parseFloat(zoomEl.value)));
 
-  function setupZoom() {
-    zoomCaps = null;
-    const caps = track && track.getCapabilities ? track.getCapabilities() : {};
-    if (caps.zoom) {
-      zoomCaps = { min: caps.zoom.min, max: caps.zoom.max };
-      zoomEl.min = caps.zoom.min;
-      zoomEl.max = caps.zoom.max;
-      zoomEl.step = caps.zoom.step || 0.1;
-      zoomEl.value = (track.getSettings().zoom) || caps.zoom.min;
-      zoomWrap.hidden = false;
-    } else {
-      zoomWrap.hidden = true;
-    }
-  }
-
-  // Nipistys kuvan päällä ohjaa kameran zoomia (sivun teksti ei suurene)
+  // Kahden sormen nipistys kuvan päällä säätää zoomia
   let pinchStartDist = 0, pinchStartZoom = 1;
   const touchDist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
   stageEl.addEventListener('touchstart', e => {
-    if (e.touches.length === 2 && zoomCaps) {
+    if (e.touches.length === 2) {
       pinchStartDist = touchDist(e.touches);
-      pinchStartZoom = parseFloat(zoomEl.value);
+      pinchStartZoom = zoom;
     }
   }, { passive: true });
   stageEl.addEventListener('touchmove', e => {
-    if (e.touches.length === 2 && zoomCaps && pinchStartDist > 0) {
+    if (e.touches.length === 2 && pinchStartDist > 0) {
       e.preventDefault();
-      setCameraZoom(pinchStartZoom * touchDist(e.touches) / pinchStartDist);
+      setZoom(pinchStartZoom * touchDist(e.touches) / pinchStartDist);
     }
   }, { passive: false });
-  zoomEl.addEventListener('input', () => setCameraZoom(parseFloat(zoomEl.value)));
+
+  // Piirtää zoomatun kuvan näkyviin joka kehyksellä
+  function drawView() {
+    if (!stream) return;
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (vw && vh) {
+      const sw = Math.round(vw / zoom), sh = Math.round(vh / zoom);
+      const sx = Math.round((vw - sw) / 2), sy = Math.round((vh - sh) / 2);
+      if (view.width !== sw || view.height !== sh) { view.width = sw; view.height = sh; }
+      vctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+    }
+    requestAnimationFrame(drawView);
+  }
   const statusEl = $('status');
   const lastEl = $('last');
 
@@ -307,12 +303,12 @@
     const pad = Math.round(h * 0.4);
     const sx = Math.max(0, Math.floor(box.x0 / s) - pad);
     const sy = Math.max(0, Math.floor(box.y0 / s) - pad);
-    const sw = Math.min(video.videoWidth - sx, Math.ceil((box.x1 - box.x0) / s) + 2 * pad);
-    const sh = Math.min(video.videoHeight - sy, Math.ceil(h) + 2 * pad);
+    const sw = Math.min(view.width - sx, Math.ceil((box.x1 - box.x0) / s) + 2 * pad);
+    const sh = Math.min(view.height - sy, Math.ceil(h) + 2 * pad);
     const k = Math.min(CONFIG.cropScale, 1800 / Math.max(1, sw));
     crop.width = Math.max(1, Math.round(sw * k));
     crop.height = Math.max(1, Math.round(sh * k));
-    cctx.drawImage(video, sx, sy, sw, sh, 0, 0, crop.width, crop.height);
+    cctx.drawImage(view, sx, sy, sw, sh, 0, 0, crop.width, crop.height);
     const img = cctx.getImageData(0, 0, crop.width, crop.height);
     const g = toGray(img.data);
     const thr = otsu(g);
@@ -336,14 +332,14 @@
 
   // ---- Kehyksen käsittely ----
   async function processFrame() {
-    if (busy || !running || !ready || video.readyState < 2) return;
+    if (busy || !running || !ready || !view.width) return;
     busy = true;
     try {
-      const vw = video.videoWidth, vh = video.videoHeight;
+      const vw = view.width, vh = view.height;
       const scale = Math.min(1, CONFIG.maxWidth / vw);
       work.width = Math.round(vw * scale);
       work.height = Math.round(vh * scale);
-      wctx.drawImage(video, 0, 0, work.width, work.height);
+      wctx.drawImage(view, 0, 0, work.width, work.height);
 
       // Vaihe 1: koko kehyksestä etsitään tekstirivit (sparse text -tila)
       await worker.setParameters({ tessedit_pageseg_mode: '11' });
@@ -354,8 +350,9 @@
       const gray = toGray(wctx.getImageData(0, 0, W, H).data);
 
       // Vaihe 2: jokainen ehdokasrivi luetaan uudelleen rajattuna ja suurennettuna
-      const s = W / video.videoWidth;
+      const s = W / view.width;
       const ocrLines = extractLines(data).filter(l => l.bbox && /[a-zäöå]/i.test(l.text || ''));
+      const best = ocrLines.reduce((a, l) => (!a || l.confidence > a.confidence ? l : a), null);
       const candidates = [];
       const rejected = [];
       for (const line of ocrLines) {
@@ -377,10 +374,12 @@
       const groups = groupIntoBubbles(lines);
       drawOverlay(groups, rejected, W, H);
       updateSpeech(groups);
+      // Diagnostiikka: näytetään paras OCR-tulos, jotta näkee mitä sovellus oikeasti näkee
+      const seen = best ? ` OCR näki: "${best.text.trim().slice(0, 50)}" (${Math.round(best.confidence)} %)` : '';
       if (!ocrLines.length) {
         setStatus('OCR ei löytänyt tekstiä. Kuvaa lähempää tai paremmalla valolla.');
       } else {
-        setStatus(`Tekstirivejä: ${lines.length}, kuplia: ${groups.length} (punainen = hylätty)`);
+        setStatus(`Luettuja rivejä: ${lines.length}, kuplia: ${groups.length}.${lines.length ? '' : seen}`);
       }
     } catch (err) {
       console.error(err);
@@ -414,8 +413,7 @@
       });
       video.srcObject = stream;
       await video.play();
-      track = stream.getVideoTracks()[0];
-      setupZoom();
+      requestAnimationFrame(drawView);
 
       setStatus('Ladataan tekstintunnistusta (ensimmäinen kerta voi kestää)…');
       worker = await Tesseract.createWorker(CONFIG.lang, 1, {
@@ -442,9 +440,6 @@
     if (stream) stream.getTracks().forEach(t => t.stop());
     stream = null;
     video.srcObject = null;
-    track = null;
-    zoomCaps = null;
-    zoomWrap.hidden = true;
     if (worker) {
       try { await worker.terminate(); } catch (_) { /* ignoroi */ }
       worker = null;
