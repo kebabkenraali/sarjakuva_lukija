@@ -23,6 +23,7 @@
   const startBtn = $('startBtn');
   const stopBtn = $('stopBtn');
   const rateEl = $('rate');
+  const bubbleOnlyEl = $('bubbleOnly');
   const statusEl = $('status');
   const lastEl = $('last');
 
@@ -251,7 +252,8 @@
       for (const line of ocrLines) {
         const raw = (line.text || '').replace(/\s+/g, ' ').trim();
         const norm = normalize(raw);
-        if (!isReadable(norm, line.confidence) || !looksLikeBubble(gray, W, H, line.bbox)) {
+        const bubbleOk = !bubbleOnlyEl.checked || looksLikeBubble(gray, W, H, line.bbox);
+        if (!isReadable(norm, line.confidence) || !bubbleOk) {
           rejected.push(line.bbox);
           continue;
         }
