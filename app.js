@@ -6,7 +6,9 @@
     lang: 'fin+eng',        // OCR-kielet
     minConfidence: 40,      // OCR-luottamus 0-100, alle tämän rivi hylätään
     frameIntervalMs: 200,   // tauko kehysten välillä (OCR:n jälkeen)
-    maxWidth: 1400,         // kuvan leveys OCR:lle (suurempi = parempi pienelle tekstille, hitaampi)
+    maxWidth: 1400,         // kuvan leveys koko kehyksen haulle (vaihe 1)
+    maxCrops: 12,           // montako tekstiriviä luetaan uudelleen rajattuna (vaihe 2)
+    cropScale: 3,           // rajauksen suurennus ennen OCR:ää (pieni teksti tunnistuu paremmin)
     confirmFrames: 2,       // montako peräkkäistä kehystä tekstin pitää näkyä ennen lukemista
     missedFrames: 4,        // montako kehystä teksti saa olla poissa ennen kuin se unohtuu
     fuzzyThreshold: 0.8,    // kuinka samankaltainen tekstin pitää olla (0-1) "samaksi"
@@ -229,6 +231,64 @@
     }
   }
 
+  // ---- Rajaus ja uudelleenluku ----
+  const crop = document.createElement('canvas');
+  const cctx = crop.getContext('2d', { willReadFrequently: true });
+
+  // Kynnysarvo (Otsu): erottaa tumman tekstin vaalealta taustalta
+  function otsu(g) {
+    const hist = new Array(256).fill(0);
+    for (let i = 0; i < g.length; i++) hist[g[i]]++;
+    const total = g.length;
+    let sumAll = 0;
+    for (let t = 0; t < 256; t++) sumAll += t * hist[t];
+    let sumB = 0, wB = 0, best = -1, thr = 128;
+    for (let t = 0; t < 256; t++) {
+      wB += hist[t];
+      if (!wB) continue;
+      const wF = total - wB;
+      if (!wF) break;
+      sumB += t * hist[t];
+      const mB = sumB / wB, mF = (sumAll - sumB) / wF;
+      const between = wB * wF * (mB - mF) * (mB - mF);
+      if (between > best) { best = between; thr = t; }
+    }
+    return thr;
+  }
+
+  // Rajaa rivin alkuperäisestä videokehyksestä, suurentaa ja binarisoi
+  function prepareCrop(box, s) {
+    const h = (box.y1 - box.y0) / s;
+    const pad = Math.round(h * 0.4);
+    const sx = Math.max(0, Math.floor(box.x0 / s) - pad);
+    const sy = Math.max(0, Math.floor(box.y0 / s) - pad);
+    const sw = Math.min(video.videoWidth - sx, Math.ceil((box.x1 - box.x0) / s) + 2 * pad);
+    const sh = Math.min(video.videoHeight - sy, Math.ceil(h) + 2 * pad);
+    const k = Math.min(CONFIG.cropScale, 1800 / Math.max(1, sw));
+    crop.width = Math.max(1, Math.round(sw * k));
+    crop.height = Math.max(1, Math.round(sh * k));
+    cctx.drawImage(video, sx, sy, sw, sh, 0, 0, crop.width, crop.height);
+    const img = cctx.getImageData(0, 0, crop.width, crop.height);
+    const g = toGray(img.data);
+    const thr = otsu(g);
+    for (let i = 0, j = 0; i < g.length; i++, j += 4) {
+      const v = g[i] > thr ? 255 : 0;
+      img.data[j] = img.data[j + 1] = img.data[j + 2] = v;
+    }
+    cctx.putImageData(img, 0, 0);
+    return crop;
+  }
+
+  // Lukee yhden rivin uudelleen rajattuna. Palauttaa tekstin ja keskiluottamuksen.
+  async function ocrCrop(box, s) {
+    const c = prepareCrop(box, s);
+    const { data } = await worker.recognize(c, {}, { blocks: true });
+    const ls = extractLines(data).filter(l => (l.text || '').trim());
+    const raw = ls.map(l => l.text.replace(/\s+/g, ' ').trim()).join(' ');
+    const conf = ls.length ? ls.reduce((a, l) => a + l.confidence, 0) / ls.length : 0;
+    return { raw, conf };
+  }
+
   // ---- Kehyksen käsittely ----
   async function processFrame() {
     if (busy || !running || !ready || video.readyState < 2) return;
@@ -240,24 +300,33 @@
       work.height = Math.round(vh * scale);
       wctx.drawImage(video, 0, 0, work.width, work.height);
 
+      // Vaihe 1: koko kehyksestä etsitään tekstirivit (sparse text -tila)
+      await worker.setParameters({ tessedit_pageseg_mode: '11' });
       const { data } = await worker.recognize(work, {}, { blocks: true });
       if (!running) return;
 
       const W = work.width, H = work.height;
       const gray = toGray(wctx.getImageData(0, 0, W, H).data);
 
-      const lines = [];
+      // Vaihe 2: jokainen ehdokasrivi luetaan uudelleen rajattuna ja suurennettuna
+      const s = W / video.videoWidth;
+      const ocrLines = extractLines(data).filter(l => l.bbox && /[a-zäöå]/i.test(l.text || ''));
+      const candidates = [];
       const rejected = [];
-      const ocrLines = extractLines(data).filter(l => l.bbox && (l.text || '').trim());
       for (const line of ocrLines) {
-        const raw = (line.text || '').replace(/\s+/g, ' ').trim();
-        const norm = normalize(raw);
         const bubbleOk = !bubbleOnlyEl.checked || looksLikeBubble(gray, W, H, line.bbox);
-        if (!isReadable(norm, line.confidence) || !bubbleOk) {
-          rejected.push(line.bbox);
-          continue;
-        }
-        lines.push({ raw, norm, box: line.bbox });
+        const tall = line.bbox.y1 - line.bbox.y0 >= 8;
+        if (bubbleOk && tall && candidates.length < CONFIG.maxCrops) candidates.push(line.bbox);
+        else rejected.push(line.bbox);
+      }
+
+      const lines = [];
+      if (candidates.length) await worker.setParameters({ tessedit_pageseg_mode: '6' });
+      for (const box of candidates) {
+        const r = await ocrCrop(box, s);
+        const norm = normalize(r.raw);
+        if (isReadable(norm, r.conf)) lines.push({ raw: r.raw, norm, box });
+        else rejected.push(box);
       }
 
       const groups = groupIntoBubbles(lines);
@@ -266,7 +335,7 @@
       if (!ocrLines.length) {
         setStatus('OCR ei löytänyt tekstiä. Kuvaa lähempää tai paremmalla valolla.');
       } else {
-        setStatus(`OCR-rivejä: ${ocrLines.length}, kuplia: ${groups.length} (punainen = hylätty)`);
+        setStatus(`Tekstirivejä: ${lines.length}, kuplia: ${groups.length} (punainen = hylätty)`);
       }
     } catch (err) {
       console.error(err);
