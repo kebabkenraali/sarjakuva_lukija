@@ -4,15 +4,16 @@
   // ---- Asetukset: säädä näillä kamera-, OCR- ja kuplatunnistusta ----
   const CONFIG = {
     lang: 'fin+eng',        // OCR-kielet
-    minConfidence: 65,      // OCR-luottamus 0-100, alle tämän rivi hylätään
+    minConfidence: 40,      // OCR-luottamus 0-100, alle tämän rivi hylätään
     frameIntervalMs: 200,   // tauko kehysten välillä (OCR:n jälkeen)
-    maxWidth: 960,          // kuvan leveys OCR:lle (pienempi = nopeampi)
+    maxWidth: 1400,         // kuvan leveys OCR:lle (suurempi = parempi pienelle tekstille, hitaampi)
     confirmFrames: 2,       // montako peräkkäistä kehystä tekstin pitää näkyä ennen lukemista
     missedFrames: 4,        // montako kehystä teksti saa olla poissa ennen kuin se unohtuu
     fuzzyThreshold: 0.8,    // kuinka samankaltainen tekstin pitää olla (0-1) "samaksi"
     repeatCooldownMs: 15000,// sama teksti ei lue uudelleen tämän ajan sisällä
-    bubbleBrightness: 170,  // taustan vaaleuskynnys (0-255): puhekuplat ovat vaaleita
-    inkThreshold: 110,      // tekstin tummuuskynnys (0-255)
+    bubbleBrightness: 150,  // taustan vaaleuskynnys (0-255): puhekuplat ovat vaaleita
+    bubbleBrightShare: 0.35,// vähintään tämä osuus taustan pikseleistä on vaaleita
+    inkThreshold: 120,      // tekstin tummuuskynnys (0-255)
   };
 
   const $ = id => document.getElementById(id);
@@ -108,8 +109,8 @@
     const brightShare = bgBright / bgCount;
     const inkShare = inkDark / inkCount;
     return bgMean >= CONFIG.bubbleBrightness
-        && brightShare >= 0.5
-        && inkShare >= 0.03 && inkShare <= 0.6;
+        && brightShare >= CONFIG.bubbleBrightShare
+        && inkShare >= 0.01 && inkShare <= 0.7;
   }
 
   // OCR-rivit (Tesseract 5: blocks -> paragraphs -> lines)
@@ -208,11 +209,16 @@
     }
   }
 
-  function drawOverlay(groups, W, H) {
+  // Keltainen = luettava kupla, punainen = OCR löysi tekstiä mutta se hylättiin
+  function drawOverlay(groups, rejected, W, H) {
     overlay.width = W;
     overlay.height = H;
     octx.clearRect(0, 0, W, H);
     octx.lineWidth = Math.max(2, W / 300);
+    octx.strokeStyle = '#ff3b30';
+    for (const b of rejected) {
+      octx.strokeRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+    }
     octx.strokeStyle = '#ffcc00';
     octx.fillStyle = 'rgba(255, 204, 0, 0.15)';
     for (const g of groups) {
@@ -240,18 +246,26 @@
       const gray = toGray(wctx.getImageData(0, 0, W, H).data);
 
       const lines = [];
-      for (const line of extractLines(data)) {
+      const rejected = [];
+      const ocrLines = extractLines(data).filter(l => l.bbox && (l.text || '').trim());
+      for (const line of ocrLines) {
         const raw = (line.text || '').replace(/\s+/g, ' ').trim();
         const norm = normalize(raw);
-        if (!line.bbox || !isReadable(norm, line.confidence)) continue;
-        if (!looksLikeBubble(gray, W, H, line.bbox)) continue;
+        if (!isReadable(norm, line.confidence) || !looksLikeBubble(gray, W, H, line.bbox)) {
+          rejected.push(line.bbox);
+          continue;
+        }
         lines.push({ raw, norm, box: line.bbox });
       }
 
       const groups = groupIntoBubbles(lines);
-      drawOverlay(groups, W, H);
+      drawOverlay(groups, rejected, W, H);
       updateSpeech(groups);
-      setStatus(`Kuplia näkyvissä: ${groups.length}`);
+      if (!ocrLines.length) {
+        setStatus('OCR ei löytänyt tekstiä. Kuvaa lähempää tai paremmalla valolla.');
+      } else {
+        setStatus(`OCR-rivejä: ${ocrLines.length}, kuplia: ${groups.length} (punainen = hylätty)`);
+      }
     } catch (err) {
       console.error(err);
       setStatus('Tunnistusvirhe: ' + err.message);
