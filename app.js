@@ -356,8 +356,16 @@
 
   // ---- Käynnistys ja pysäytys ----
   async function start() {
+    if (running || startBtn.disabled) return;
     startBtn.disabled = true;
+    stopBtn.disabled = false;   // voi perua latauksen kesken
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Kamera ei ole käytettävissä. Avaa sivu HTTPS-osoitteesta.');
+      }
+      if (typeof Tesseract === 'undefined') {
+        throw new Error('Tesseract-kirjastoa ei ladattu. Tarkista internetyhteys ja lataa sivu uudelleen.');
+      }
       // iOS/Android vaatii puheen käynnistyksen käyttäjän napautuksesta
       if (synth) synth.speak(new SpeechSynthesisUtterance(''));
 
@@ -374,15 +382,18 @@
       await video.play();
 
       setStatus('Ladataan tekstintunnistusta (ensimmäinen kerta voi kestää)…');
-      worker = await Tesseract.createWorker(CONFIG.lang, 1, {
+      const loading = Tesseract.createWorker(CONFIG.lang, 1, {
         logger: m => {
           if (!ready && m.status) setStatus(`${m.status} ${Math.round((m.progress || 0) * 100)} %`);
         },
       });
+      // Jos kielidatan lataus jumittaa, ei jäädä ikuisesti "Ladataan…" -tilaan
+      const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('tekstintunnistuksen lataus kesti liian kauan (yli 90 s). Tarkista yhteys.')), 90000));
+      worker = await Promise.race([loading, timeout]);
       ready = true;
 
       running = true;
-      stopBtn.disabled = false;
       setStatus('Kuuntelee. Osoita kameraa sarjakuvaruutuun.');
       loop();
     } catch (err) {
@@ -416,12 +427,4 @@
   startBtn.addEventListener('click', start);
   stopBtn.addEventListener('click', stop);
 
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    setStatus('Kamera ei ole käytettävissä. Avaa sivu HTTPS-osoitteesta.');
-    startBtn.disabled = true;
-  }
-  if (typeof Tesseract === 'undefined') {
-    setStatus('Tesseract-kirjastoa ei ladattu. Tarkista internetyhteys.');
-    startBtn.disabled = true;
-  }
 })();
