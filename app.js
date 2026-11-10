@@ -87,7 +87,7 @@
   // Rivin ympärillä pitää olla vaalea tausta ja rivin sisällä tummaa tekstiä.
   // Näin erotetaan sarjakuvan puhekuplat ja tekstiruudut kuvan muusta tekstistä
   // (esim. kyltit, tuotemerkit, taustalla oleva ympäristön teksti).
-  function looksLikeBubble(gray, W, H, box) {
+  function looksLikeBubbleRect(gray, W, H, box) {
     const h = box.y1 - box.y0;
     const pad = Math.max(4, Math.round(h * 0.6));
     const X0 = clamp(box.x0 - pad, 0, W - 1), X1 = clamp(box.x1 + pad, 0, W - 1);
@@ -115,6 +115,78 @@
     return bgMean >= CONFIG.bubbleBrightness
         && brightShare >= CONFIG.bubbleBrightShare
         && inkShare >= 0.01 && inkShare <= 0.7;
+  }
+
+  // Pyöreät kuplat: etsitään tekstin ympäriltä vaalea alue (täyttö) ja tarkistetaan sen muoto.
+  // Ellipsi täyttää noin 78 % laatikostaan, suorakulmio 100 %. Vuotava tausta (koko paneeli) hylätään.
+  function floodBubble(gray, W, H, box) {
+    const h = box.y1 - box.y0;
+    if (h < 4) return false;
+    const pad = Math.max(6, Math.round(h * 2.5));
+    const RX0 = clamp(box.x0 - pad, 0, W - 1), RX1 = clamp(box.x1 + pad, 0, W - 1);
+    const RY0 = clamp(box.y0 - pad, 0, H - 1), RY1 = clamp(box.y1 + pad, 0, H - 1);
+    const rw = RX1 - RX0 + 1, rh = RY1 - RY0 + 1;
+    const inText = (x, y) => x >= box.x0 && x <= box.x1 && y >= box.y0 && y <= box.y1;
+
+    // Tekstin tulee olla tummaa
+    let ink = 0, count = 0;
+    for (let y = box.y0; y <= box.y1; y++) {
+      for (let x = box.x0; x <= box.x1; x++) {
+        count++;
+        if (gray[y * W + x] < CONFIG.inkThreshold) ink++;
+      }
+    }
+    const inkShare = count ? ink / count : 0;
+    if (inkShare < 0.01 || inkShare > 0.7) return false;
+
+    // Siemenet: vaaleita pikseleitä tekstin välittömässä läheisyydessä
+    const seeds = [];
+    for (let y = Math.max(RY0, box.y0 - 3); y <= Math.min(RY1, box.y1 + 3); y++) {
+      for (let x = Math.max(RX0, box.x0 - 3); x <= Math.min(RX1, box.x1 + 3); x++) {
+        if (!inText(x, y) && gray[y * W + x] > CONFIG.bubbleBrightness) seeds.push([x, y]);
+      }
+    }
+    if (!seeds.length) return false;
+
+    const seen = new Uint8Array(rw * rh);
+    const MAX_VISIT = 60000;
+    // Kokeillaan muutama siemen; yksi niistä riittää
+    const tries = Math.min(seeds.length, 6);
+    for (let t = 0; t < tries; t++) {
+      const [sx, sy] = seeds[Math.floor((t * seeds.length) / tries)];
+      const si = (sy - RY0) * rw + (sx - RX0);
+      if (seen[si]) continue;
+      const queue = [si];
+      seen[si] = 1;
+      let head = 0, minx = Infinity, miny = Infinity, maxx = -1, maxy = -1, touches = false;
+      while (head < queue.length) {
+        const i = queue[head++];
+        const x = (i % rw) + RX0, y = Math.floor(i / rw) + RY0;
+        if (x < minx) minx = x; if (x > maxx) maxx = x;
+        if (y < miny) miny = y; if (y > maxy) maxy = y;
+        if (x === RX0 || x === RX1 || y === RY0 || y === RY1) touches = true;
+        if (queue.length > MAX_VISIT) { touches = true; break; }
+        const nb = [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]];
+        for (const [nx, ny] of nb) {
+          if (nx < RX0 || nx > RX1 || ny < RY0 || ny > RY1) continue;
+          const ni = (ny - RY0) * rw + (nx - RX0);
+          if (seen[ni] || inText(nx, ny) || gray[ny * W + nx] <= CONFIG.bubbleBrightness) continue;
+          seen[ni] = 1;
+          queue.push(ni);
+        }
+      }
+      if (touches) continue;                      // vuoti ulos: tausta jatkuu, ei kupla
+      const bw = maxx - minx + 1, bh = maxy - miny + 1;
+      const fill = queue.length / (bw * bh);
+      const containsText = minx <= box.x0 && maxx >= box.x1 && miny <= box.y0 && maxy >= box.y1;
+      if (containsText && fill >= 0.45 && bw <= rw && bh <= rh) return true;
+    }
+    return false;
+  }
+
+  // Kupla = joko pyöreä (täyttötesti) tai suorakulmainen (vanha testi)
+  function looksLikeBubble(gray, W, H, box) {
+    return floodBubble(gray, W, H, box) || looksLikeBubbleRect(gray, W, H, box);
   }
 
   // OCR-rivit (Tesseract 5: blocks -> paragraphs -> lines)
