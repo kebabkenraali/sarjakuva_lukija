@@ -355,6 +355,21 @@
   }
 
   // ---- Käynnistys ja pysäytys ----
+  // Muuttaa kameravirheen selkeäksi suomenkieliseksi ohjeeksi
+  function describeError(err) {
+    const name = err && err.name;
+    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+      return 'Kameran käyttö on estetty. Salli kamera selaimen asetuksista (lukko-kuvake osoitepalkissa) ja yritä uudelleen.';
+    }
+    if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+      return 'Kameraa ei löytynyt tai se ei tue asetuksia.';
+    }
+    if (name === 'NotReadableError') {
+      return 'Kamera on jo jonkin muun sovelluksen käytössä.';
+    }
+    return 'Virhe: ' + (err && err.message ? err.message : err);
+  }
+
   async function start() {
     if (running || startBtn.disabled) return;
     startBtn.disabled = true;
@@ -398,8 +413,9 @@
       loop();
     } catch (err) {
       console.error(err);
-      setStatus('Virhe: ' + err.message);
+      const msg = describeError(err);
       await stop();
+      setStatus(msg);   // stop() kirjoittaa tilariville, joten virhe asetetaan vasta sen jälkeen
     }
   }
 
