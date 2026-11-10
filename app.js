@@ -26,6 +26,7 @@
   const stopBtn = $('stopBtn');
   const rateEl = $('rate');
   const bubbleOnlyEl = $('bubbleOnly');
+  const rtlEl = $('rtl');
   const statusEl = $('status');
   const lastEl = $('last');
 
@@ -199,9 +200,11 @@
     const now = Date.now();
     recentlySpoken = recentlySpoken.filter(r => now - r.t < CONFIG.repeatCooldownMs);
 
+    // Rivit luetaan ylhäältä alas. Vaakasuunta: länsi (vasemmalta oikealle) tai manga (oikealta vasemmalle)
+    const dir = rtlEl.checked ? -1 : 1;
     const ready = tracks
       .filter(t => !t.spoken && t.missed === 0 && t.frames >= CONFIG.confirmFrames)
-      .sort((a, b) => (a.box.y0 - b.box.y0) || (a.box.x0 - b.box.x0));
+      .sort((a, b) => (a.box.y0 - b.box.y0) || dir * (a.box.x0 - b.box.x0));
 
     for (const t of ready) {
       t.spoken = true;

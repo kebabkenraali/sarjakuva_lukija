@@ -38,10 +38,19 @@ Tiedostot:
 | `confirmFrames` | Kuinka monta kehystä tekstin pitää näkyä ennen lukemista |
 | `maxWidth` | OCR-kuvan leveys: suurempi = tarkempi mutta hitaampi |
 
+## Asetukset sovelluksessa
+
+- **Vain puhekuplat** (oletuksena pois): lukee vain vaalealla taustalla olevan tekstin. Kytke päälle, jos kuvassa on paljon muuta tekstiä.
+- **Manga (oikealta vasemmalle)**: järjestää luettavat rivit oikealta vasemmalle. Oletuksena vasemmalta oikealle.
+- **Puhenopeus**: säätää puheen nopeutta.
+
+Tunnistus tehdään kahdessa vaiheessa: ensin etsitään tekstirivit koko kuvasta, sitten jokainen rivi luetaan uudelleen rajattuna, 3-kertaisesti suurennettuna ja binarisoituna. Tämä parantaa tunnistusta pienelle kuplatekstille.
+
 ## Rajoitukset ja jatkokehitys
 
-- Tesseract ei ole sarjakuvaan koulutettu. Käsin kirjoitetut kirjaimet ja kapeat fontit tunnistuvat huonosti.
-- Kuplantunnistus on heuristinen (vaalea tausta + tumma teksti). Pyöreät tai kuvioidut kuplat voivat jäädä huomaamatta.
+- Tesseract ei ole sarjakuvaan koulutettu. Käsin kirjoitetut kirjaimet, kapeat ja koristeelliset fontit sekä epätarkka kuva tunnistuvat edelleen huonosti.
+- Kuplantunnistus on heuristinen (vaalea tausta + tumma teksti). Pyöreät tai kuvioidut kuplat voivat jäädä huomaamatta, joten sitä kannattaa käyttää vain tarvittaessa.
   Seuraava askel: OpenCV:n kontuurit tai pieni koulutettu malli kuplien etsintään.
-- Puhekuplien järjestys on ylhäältä alas, vasemmalta oikealle (ei manga-tyylinen oikealta vasemmalle).
-- Ei vielä: kuplan häntä/puhujan tunnistus, kuvan tallennus, käännös.
+- Yhdeksi kuplaksi yhdistetään vain lähekkäiset rivit. Puhujan tai kuplan hännän tunnistusta ei ole.
+- Ei vielä: kuvan tallennus, käännös.
+- Kamera ei aina tue laitteistozoomia, joten zoom-toiminto on poistettu. Lähennä kuvaa fyysisesti lähemmäs sarjakuvaa.
